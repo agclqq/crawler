@@ -1,0 +1,170 @@
+# Cursor 开发规范
+
+## 项目架构
+
+本项目采用领域驱动设计（DDD）分层架构，包含以下层次：
+
+1. **Domain Layer (领域层)**: `domain/`
+   - 核心业务逻辑和实体
+   - 不依赖任何技术框架
+   - 定义仓储接口和领域服务接口
+
+2. **Application Layer (应用层)**: `application/`
+   - 用例实现和业务流程编排
+   - 使用 DTO 进行数据传输
+   - 协调领域层和基础设施层
+
+3. **Infrastructure Layer (基础设施层)**: `infrastructure/`
+   - 技术实现（Playwright、数据库等）
+   - 实现领域层定义的接口
+   - 配置管理和外部服务适配
+
+4. **Interface Layer (接口层)**: `interface/`
+   - API 和 CLI 接口
+   - 输入验证和响应序列化
+   - 不包含业务逻辑
+
+## 编码规范
+
+### Python 代码风格
+
+- 使用 Python 3.10+ 特性
+- 遵循 PEP 8 代码风格
+- 使用类型提示（Type Hints）
+- 使用 `black` 格式化代码（行长度 100）
+- 使用 `ruff` 进行代码检查
+- 使用 `mypy` 进行类型检查
+
+### 命名规范
+
+- **类名**: 使用 PascalCase，如 `CrawlerTask`, `PlaywrightBrowserService`
+- **函数/方法名**: 使用 snake_case，如 `crawl_url`, `find_by_id`
+- **常量**: 使用 UPPER_SNAKE_CASE，如 `MAX_RETRIES`
+- **私有成员**: 使用单下划线前缀，如 `_session`, `_browser`
+- **模块名**: 使用 snake_case，如 `playwright_service.py`
+
+### 导入顺序
+
+1. 标准库导入
+2. 第三方库导入
+3. 本地应用导入
+
+```python
+# 标准库
+import asyncio
+from typing import Optional
+
+# 第三方库
+from playwright.async_api import async_playwright
+from loguru import logger
+
+# 本地导入
+from domain.entities import CrawlerTask
+from infrastructure.repositories import SQLAlchemyCrawlerTaskRepository
+```
+
+### 文档字符串
+
+- 使用 Google 风格的文档字符串
+- 为所有公共类、函数、方法添加文档字符串
+
+```python
+def crawl(self, url: URL, options: Optional[Dict[str, Any]] = None) -> str:
+    """爬取指定 URL 的内容
+    
+    Args:
+        url: 要爬取的 URL
+        options: 可选的爬取选项
+        
+    Returns:
+        页面 HTML 内容
+        
+    Raises:
+        DomainError: 当爬取失败时
+    """
+    pass
+```
+
+## DDD 最佳实践
+
+### 领域层
+
+- ✅ 保持领域层纯净，不依赖技术框架
+- ✅ 使用值对象封装业务概念（URL、TaskStatus 等）
+- ✅ 实体包含业务逻辑方法
+- ✅ 定义仓储接口，不实现具体逻辑
+- ❌ 不要在领域层导入 SQLAlchemy、Playwright 等框架
+
+### 应用层
+
+- ✅ 用例类专注于单一业务目标
+- ✅ 使用依赖注入获取依赖
+- ✅ 使用 DTO 在层之间传输数据
+- ✅ 处理事务边界
+- ❌ 不要在应用层包含业务规则（应该在领域层）
+
+### 基础设施层
+
+- ✅ 实现领域层定义的接口
+- ✅ 处理技术异常并转换为领域异常
+- ✅ 使用适配器模式封装外部服务
+- ✅ 配置管理集中在此层
+
+### 接口层
+
+- ✅ 只负责输入输出转换
+- ✅ 验证输入数据
+- ✅ 统一处理异常
+- ❌ 不包含业务逻辑
+
+## 测试规范
+
+- 测试文件放在 `tests/` 目录
+- 测试文件命名: `test_*.py`
+- 使用 `pytest` 作为测试框架
+- 为每个用例编写测试
+- 使用 mock 隔离依赖
+
+## 依赖管理
+
+- 使用 `uv` 管理 Python 依赖
+- 如果某些包无法通过 uv 管理，使用 conda
+- 依赖定义在 `pyproject.toml` 中
+- 定期更新依赖版本
+
+## Git 提交规范
+
+- 使用有意义的提交信息
+- 格式: `<type>: <description>`
+- 类型: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+
+## 代码审查要点
+
+1. 是否符合 DDD 分层架构
+2. 是否遵循编码规范
+3. 是否有适当的错误处理
+4. 是否有类型提示
+5. 是否有文档字符串
+6. 是否有测试覆盖
+
+## 常见问题
+
+### Q: 在哪里添加新的业务逻辑？
+A: 如果是核心业务规则，放在领域层；如果是用例编排，放在应用层。
+
+### Q: 如何添加新的数据源？
+A: 在基础设施层实现新的仓储，实现领域层定义的接口。
+
+### Q: 如何添加新的外部服务？
+A: 在基础设施层的 `adapters/` 目录创建适配器，实现领域服务接口。
+
+### Q: 如何扩展爬虫功能？
+A: 在 `PlaywrightBrowserService` 中添加新方法，或创建新的浏览器服务实现。
+
+## 参考资源
+
+- [DDD 分层架构](https://martinfowler.com/bliki/PresentationDomainDataLayering.html)
+- [Python Type Hints](https://docs.python.org/3/library/typing.html)
+- [Playwright Python](https://playwright.dev/python/)
+- [SQLAlchemy Async](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html)
+
