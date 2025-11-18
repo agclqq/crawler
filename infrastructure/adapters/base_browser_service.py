@@ -51,8 +51,11 @@ class BaseBrowserService(IBrowserService, ABC):
             self._cookies_dir = Path(cookies_dir or "cookies")
             self._cookies_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Cookies directory: {self._cookies_dir.absolute()}")
+            # 记录已加载的域名，避免重复加载
+            self._loaded_cookie_domains: set[str] = set()
         else:
             self._cookies_dir = None
+            self._loaded_cookie_domains = set()
 
     # ========== 浏览器管理 ==========
 
@@ -120,6 +123,9 @@ class BaseBrowserService(IBrowserService, ABC):
             await self._playwright.stop()
             self._playwright = None
             logger.info("Playwright stopped")
+
+        # 清空已加载的域名记录，以便下次启动时重新加载
+        self._loaded_cookie_domains.clear()
 
     # ========== 反爬虫策略 ==========
 
@@ -363,20 +369,28 @@ class BaseBrowserService(IBrowserService, ABC):
         safe_domain = domain.replace(".", "_")
         return self._cookies_dir / f"{safe_domain}.json"
 
-    async def _load_cookies(self, page: Page, domain: str) -> None:
-        """加载指定域名的 cookies
+    async def _load_cookies(self, page: Page, domain: str, force_reload: bool = False) -> None:
+        """加载指定域名的 cookies（如果尚未加载）
 
         Args:
             page: Playwright 页面对象
             domain: 域名
+            force_reload: 是否强制重新加载（即使已加载过）
         """
         if not self._enable_cookies_persistence:
+            return
+
+        # 如果已经加载过该域名的 cookies，且不强制重新加载，则跳过
+        if domain in self._loaded_cookie_domains and not force_reload:
+            logger.debug(f"Cookies for domain {domain} already loaded, skipping")
             return
 
         cookies_file = self._get_cookies_file_path(domain)
 
         if not cookies_file.exists():
             logger.debug(f"Cookies file not found for domain {domain}: {cookies_file}")
+            # 即使文件不存在，也标记为已尝试加载，避免重复检查
+            self._loaded_cookie_domains.add(domain)
             return
 
         try:
@@ -389,17 +403,58 @@ class BaseBrowserService(IBrowserService, ABC):
                     if "domain" not in cookie:
                         cookie["domain"] = domain
 
+                # Cookies 添加到 context 后，所有页面都会共享
                 await page.context.add_cookies(cookies)
-                logger.info(f"Loaded {len(cookies)} cookies for domain {domain}")
+                self._loaded_cookie_domains.add(domain)
+                logger.info(f"Loaded {len(cookies)} cookies for domain {domain} (shared across all pages)")
             else:
                 logger.debug(f"No cookies to load for domain {domain}")
+                self._loaded_cookie_domains.add(domain)
         except json.JSONDecodeError as e:
             logger.warning(f"Invalid JSON in cookies file {cookies_file}: {e}")
+            self._loaded_cookie_domains.add(domain)
         except Exception as e:
             logger.error(f"Failed to load cookies for domain {domain}: {e}")
+            # 即使加载失败，也标记为已尝试，避免重复尝试
+            self._loaded_cookie_domains.add(domain)
+
+    def _is_cookie_related_to_domain(self, cookie_domain: str, target_domain: str) -> bool:
+        """判断 cookie 是否与目标域名相关
+
+        Args:
+            cookie_domain: Cookie 的域名（可能以 . 开头，如 .xiaohongshu.com）
+            target_domain: 目标域名（如 www.xiaohongshu.com）
+
+        Returns:
+            True: Cookie 与目标域名相关, False: 不相关
+        """
+        if not cookie_domain:
+            return False
+
+        # 移除开头的点（如果有）
+        cookie_domain_clean = cookie_domain.lstrip(".")
+        target_domain_clean = target_domain.lstrip(".")
+
+        # 完全匹配
+        if cookie_domain_clean == target_domain_clean:
+            return True
+
+        # Cookie 域名是目标域名的父域名（如 .xiaohongshu.com 匹配 www.xiaohongshu.com）
+        if cookie_domain.startswith(".") and target_domain_clean.endswith(cookie_domain_clean):
+            return True
+
+        # Cookie 域名是目标域名的子域名（如 sub.xiaohongshu.com 匹配 xiaohongshu.com）
+        if target_domain_clean.endswith("." + cookie_domain_clean):
+            return True
+
+        # Cookie 域名包含目标域名（如 xiaohongshu.com 匹配 www.xiaohongshu.com）
+        if cookie_domain_clean in target_domain_clean or target_domain_clean in cookie_domain_clean:
+            return True
+
+        return False
 
     async def _save_cookies(self, page: Page, domain: str) -> None:
-        """保存指定域名的 cookies
+        """保存指定域名的 cookies（包括所有相关域名的 cookies）
 
         Args:
             page: Playwright 页面对象
@@ -409,19 +464,50 @@ class BaseBrowserService(IBrowserService, ABC):
             return
 
         try:
-            # 获取当前页面的所有 cookies
-            cookies = await page.context.cookies()
+            # 获取 context 中的所有 cookies（包括所有域名）
+            all_cookies = await page.context.cookies()
 
-            # 过滤出属于当前域名的 cookies
-            domain_cookies = [cookie for cookie in cookies if domain in cookie.get("domain", "")]
+            if not all_cookies:
+                logger.debug(f"No cookies found in context for domain {domain}")
+                return
 
-            if domain_cookies:
+            # 过滤出与当前域名相关的 cookies
+            # 包括：当前域名、父域名（如 .xiaohongshu.com）、子域名
+            related_cookies = []
+            for cookie in all_cookies:
+                cookie_domain = cookie.get("domain", "")
+                if self._is_cookie_related_to_domain(cookie_domain, domain):
+                    related_cookies.append(cookie)
+
+            if related_cookies:
                 cookies_file = self._get_cookies_file_path(domain)
+                # 合并已存在的 cookies（如果有）
+                existing_cookies = []
+                if cookies_file.exists():
+                    try:
+                        with open(cookies_file, "r", encoding="utf-8") as f:
+                            existing_cookies = json.load(f)
+                    except Exception as e:
+                        logger.warning(f"Failed to load existing cookies: {e}")
+
+                # 合并 cookies：以 name + domain + path 作为唯一标识
+                cookie_key = lambda c: (c.get("name", ""), c.get("domain", ""), c.get("path", ""))
+                existing_dict = {cookie_key(c): c for c in existing_cookies}
+                new_dict = {cookie_key(c): c for c in related_cookies}
+
+                # 更新或添加新的 cookies
+                existing_dict.update(new_dict)
+
+                # 保存合并后的 cookies
+                merged_cookies = list(existing_dict.values())
                 with open(cookies_file, "w", encoding="utf-8") as f:
-                    json.dump(domain_cookies, f, indent=2, ensure_ascii=False)
-                logger.debug(f"Saved {len(domain_cookies)} cookies for domain {domain}")
+                    json.dump(merged_cookies, f, indent=2, ensure_ascii=False)
+                logger.info(
+                    f"Saved {len(merged_cookies)} cookies for domain {domain} "
+                    f"(merged {len(existing_cookies)} existing + {len(related_cookies)} new)"
+                )
             else:
-                logger.debug(f"No cookies to save for domain {domain}")
+                logger.debug(f"No related cookies to save for domain {domain}")
         except Exception as e:
             logger.error(f"Failed to save cookies for domain {domain}: {e}")
 

@@ -63,9 +63,19 @@ class XiaohongshuDownloadImagesUseCase:
         if not urls:
             raise DomainError("No URLs provided. Use --urls or --url-config-file")
 
-        # 去重
+        # 去重（保持顺序）
+        original_count = len(urls)
         unique_urls = list(dict.fromkeys(urls))  # 保持顺序的去重
-        logger.info(f"Loaded {len(unique_urls)} unique URLs")
+        duplicate_count = original_count - len(unique_urls)
+
+        if duplicate_count > 0:
+            logger.info(
+                f"URL 去重: 原始 {original_count} 个 URL，去重后 {len(unique_urls)} 个唯一 URL，"
+                f"移除了 {duplicate_count} 个重复 URL"
+            )
+        else:
+            logger.info(f"加载了 {len(unique_urls)} 个 URL（无重复）")
+
         return unique_urls
 
     def _sanitize_filename(self, filename: str) -> str:
@@ -157,53 +167,61 @@ class XiaohongshuDownloadImagesUseCase:
 
         return images_with_data
 
-    async def execute(self, command: XiaohongshuDownloadImagesCommand) -> str:
+    async def execute(self, command: XiaohongshuDownloadImagesCommand) -> Dict[str, str]:
         """执行图片下载用例
 
         Args:
             command: 下载命令
 
         Returns:
-            生成的 Word 文件路径
+            URL 和 Word 文件路径的对应关系字典 {url: word_file_path}
         """
         logger.info("Starting Xiaohongshu download images use case")
 
-        # 加载 URL 列表
+        # 加载 URL 列表（已去重）
         urls = self._load_urls(command)
 
-        # 获取第一个 URL 的 title 用于生成文件名
-        page_title = ""
-        if urls:
+        # 存储 URL 和 Word 文件路径的对应关系
+        url_to_word_file: Dict[str, str] = {}
+
+        # 为每个 URL 生成一个独立的 Word 文档
+        for url_index, url in enumerate(urls, 1):
             try:
-                page_title = await self._browser_service.get_page_title(urls[0])
-                logger.info(f"Got page title from first URL: {page_title}")
-            except Exception as e:
-                logger.warning(f"Failed to get page title from first URL: {e}")
+                logger.info(f"Processing URL {url_index}/{len(urls)}: {url}")
 
-        # 生成文件名
-        filename_base = self._generate_filename(page_title)
-        filename = f"{filename_base}.docx"
-        logger.info(f"Generated filename: {filename}")
+                # 获取当前 URL 的 title 用于生成文件名
+                page_title = ""
+                try:
+                    page_title = await self._browser_service.get_page_title(url)
+                    logger.info(f"Got page title from URL: {page_title}")
+                except Exception as e:
+                    logger.warning(f"Failed to get page title from URL: {e}")
 
-        # 创建 Word 文档
-        doc = Document()
+                # 生成文件名（如果多个 URL，添加序号以避免重名）
+                filename_base = self._generate_filename(page_title)
+                if len(urls) > 1:
+                    filename_base = f"{filename_base}_{url_index}"
+                filename = f"{filename_base}.docx"
+                logger.info(f"Generated filename: {filename}")
 
-        # 设置页面边距为 0
-        sections = doc.sections
-        for section in sections:
-            section.top_margin = Inches(0)
-            section.bottom_margin = Inches(0)
-            section.left_margin = Inches(0)
-            section.right_margin = Inches(0)
+                # 创建新的 Word 文档
+                doc = Document()
 
-        # 逐个处理 URL
-        for url in urls:
-            try:
+                # 设置页面边距为 0
+                sections = doc.sections
+                for section in sections:
+                    section.top_margin = Inches(0)
+                    section.bottom_margin = Inches(0)
+                    section.left_margin = Inches(0)
+                    section.right_margin = Inches(0)
+
                 # 获取并下载图片
                 images_with_data = await self._download_images_for_url(url)
 
                 if not images_with_data:
                     logger.warning(f"No images downloaded for URL: {url}")
+                    # 即使没有图片，也记录 URL（标记为失败）
+                    url_to_word_file[url] = ""
                     continue
 
                 # 按 index 排序（虽然已经排序，但确保一下）
@@ -225,20 +243,25 @@ class XiaohongshuDownloadImagesUseCase:
                         logger.exception("Full traceback:")
                         continue
 
+                # 保存文档
+                output_path = Path(command.output_dir) / filename
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                doc.save(str(output_path))
+
+                logger.info(f"Word document saved to: {output_path}")
+                url_to_word_file[url] = str(output_path)
+
                 # 在处理下一个 URL 前稍作等待
                 await asyncio.sleep(1)
 
             except Exception as e:
                 logger.error(f"Error processing URL {url}: {e}")
+                # 记录失败的 URL
+                url_to_word_file[url] = ""
                 continue
 
-        # 保存文档
-        output_path = Path(command.output_dir) / filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        doc.save(str(output_path))
-
-        logger.info(f"Word document saved to: {output_path}")
-        return str(output_path)
+        logger.info(f"Generated {len([v for v in url_to_word_file.values() if v])} Word documents")
+        return url_to_word_file
 
     def _detect_image_format(self, image_data: bytes) -> str:
         """通过文件头检测图片真实格式

@@ -204,9 +204,34 @@ def xiaohongshu_download_images(
 
             # 执行用例
             use_case = XiaohongshuDownloadImagesUseCase(browser_service)
-            output_path = await use_case.execute(command)
+            url_to_word_file = await use_case.execute(command)
 
-            click.echo(f"Images downloaded and saved to: {output_path}")
+            # 显示总结信息
+            if url_to_word_file:
+                successful_count = len([v for v in url_to_word_file.values() if v])
+                failed_count = len([v for v in url_to_word_file.values() if not v])
+
+                click.echo("\n" + "=" * 80)
+                click.echo("任务完成总结")
+                click.echo("=" * 80)
+                click.echo(f"总 URL 数: {len(url_to_word_file)}")
+                click.echo(f"成功生成: {successful_count} 个 Word 文档")
+                if failed_count > 0:
+                    click.echo(f"失败: {failed_count} 个 URL")
+                click.echo("\nURL 和 Word 文档对应关系:")
+                click.echo("-" * 80)
+
+                for index, (url, word_file) in enumerate(url_to_word_file.items(), 1):
+                    if word_file:
+                        click.echo(f"{index}. {url}")
+                        click.echo(f"   └─> {word_file}")
+                    else:
+                        click.echo(f"{index}. {url}")
+                        click.echo(f"   └─> [失败] 未生成 Word 文档")
+
+                click.echo("=" * 80)
+            else:
+                click.echo("No Word documents were generated.")
         except Exception as e:
             click.echo(f"Error: {str(e)}", err=True)
             logger.exception("Download failed")
