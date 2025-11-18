@@ -58,3 +58,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Cookies
+cookies/
+*.cookies.json
+

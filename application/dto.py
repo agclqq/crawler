@@ -56,3 +56,11 @@ class XiaohongshuBrowseCommand:
     max_items_per_view: int = 3  # 每个视窗中查看1~5个，默认3个
     max_scrolls: int = 5  # 搜索结果最大滚动次数
     max_comment_scrolls: int = 10  # 评论最大滚动次数
+
+
+@dataclass
+class XiaohongshuDownloadImagesCommand:
+    """小红书下载图片命令"""
+    urls: Optional[list[str]] = None  # 直接指定的 URL 列表
+    url_config_file: Optional[str] = None  # URL 配置文件路径
+    output_dir: str = "output"  # 输出目录

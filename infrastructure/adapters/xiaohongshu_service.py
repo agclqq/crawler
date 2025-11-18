@@ -2,17 +2,15 @@
 
 import asyncio
 import random
-import time
 from typing import Dict, Any, Optional, List
-from playwright.async_api import Page, Browser, Locator, Playwright
+from playwright.async_api import Page, Locator
 from loguru import logger
 
-from domain.services import IBrowserService
 from domain.value_objects import URL, SearchKeyword
-from infrastructure.config import settings
+from infrastructure.adapters.base_browser_service import BaseBrowserService
 
 
-class XiaohongshuBrowserService(IBrowserService):
+class XiaohongshuBrowserService(BaseBrowserService):
     """小红书浏览器服务实现"""
 
     def __init__(
@@ -20,51 +18,31 @@ class XiaohongshuBrowserService(IBrowserService):
         browser_type: Optional[str] = None,
         headless: Optional[bool] = None,
         timeout: Optional[int] = None,
+        cookies_dir: Optional[str] = None,
+        enable_anti_detection: bool = True,  # 默认启用反检测
+        enable_cookies_persistence: bool = True,  # 默认启用 cookies 持久化
     ):
-        self._browser_type = browser_type or settings.playwright_browser
-        self._headless = headless if headless is not None else settings.playwright_headless
-        self._timeout = timeout or settings.playwright_timeout
-        self._playwright: Optional[Playwright] = None
-        self._browser: Optional[Browser] = None
-        self._page: Optional[Page] = None
+        """初始化小红书浏览器服务
 
-    async def _ensure_browser(self) -> Browser:
-        """确保浏览器已启动"""
-        if self._browser is None:
-            from playwright.async_api import async_playwright
-
-            if self._playwright is None:
-                self._playwright = await async_playwright().start()
-
-            browser_class = getattr(self._playwright, self._browser_type)
-
-            # 反爬虫策略：去除自动化特征
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-site-isolation-trials",
-                "--disable-infobars",
-                "--disable-notifications",
-                "--disable-popup-blocking",
-                "--start-maximized",
-            ]
-
-            self._browser = await browser_class.launch(
-                headless=self._headless,
-                args=launch_args,
-                # 设置真实的浏览器选项
-                channel=None,  # 使用系统安装的 Chrome（如果可用）
-            )
-            logger.info(f"Browser {self._browser_type} launched with anti-detection features")
-
-        return self._browser
+        Args:
+            browser_type: 浏览器类型
+            headless: 是否无头模式
+            timeout: 超时时间
+            cookies_dir: Cookies 存储目录
+            enable_anti_detection: 是否启用反检测（默认 True）
+            enable_cookies_persistence: 是否启用 Cookies 持久化（默认 True）
+        """
+        super().__init__(
+            browser_type=browser_type,
+            headless=headless,
+            timeout=timeout,
+            cookies_dir=cookies_dir,
+            enable_anti_detection=enable_anti_detection,
+            enable_cookies_persistence=enable_cookies_persistence,
+        )
 
     async def _get_page(self) -> Page:
-        """获取页面实例"""
+        """获取页面实例（单例模式，复用同一页面）"""
         if self._page is None:
             browser = await self._ensure_browser()
             self._page = await browser.new_page()
@@ -72,62 +50,9 @@ class XiaohongshuBrowserService(IBrowserService):
             # 设置视口
             await self._page.set_viewport_size({"width": 1920, "height": 1080})
 
-            # 反爬虫策略：伪装为自然人使用的浏览器
-            # 1. 设置真实的 User-Agent
-            await self._page.set_extra_http_headers(
-                {
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
-                    "Cache-Control": "max-age=0",
-                }
-            )
-
-            # 2. 注入脚本去除 webdriver 特征
-            await self._page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                
-                // 覆盖 plugins
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
-                });
-                
-                // 覆盖 languages
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['zh-CN', 'zh', 'en']
-                });
-                
-                // 覆盖 permissions
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
-                
-                // 覆盖 chrome 对象
-                window.chrome = {
-                    runtime: {}
-                };
-                
-                // 覆盖 Notification
-                Object.defineProperty(window, 'Notification', {
-                    get: () => undefined
-                });
-            """)
-
-            # 3. 设置额外的上下文选项
-            context = self._page.context
-            await context.set_extra_http_headers({"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
+            # 设置反爬虫策略（使用基类方法）
+            if self._enable_anti_detection:
+                await self._setup_anti_detection(self._page)
 
         return self._page
 
@@ -141,6 +66,10 @@ class XiaohongshuBrowserService(IBrowserService):
 
         logger.info(f"Checking login status at {url.value}")
 
+        # 加载该域名的 cookies
+        domain = self._get_domain_from_url(url.value)
+        await self._load_cookies(page, domain)
+
         # 使用 load 而不是 networkidle，因为 networkidle 可能永远达不到（持续的网络请求）
         try:
             await page.goto(url.value, wait_until="load", timeout=60000)
@@ -150,6 +79,9 @@ class XiaohongshuBrowserService(IBrowserService):
 
         # 等待页面完整加载
         await asyncio.sleep(2)
+
+        # 保存 cookies（页面加载后可能更新了 cookies）
+        await self._save_cookies(page, domain)
 
         # 检查登录状态
         html = await page.content()
@@ -168,18 +100,26 @@ class XiaohongshuBrowserService(IBrowserService):
         logger.info("Waiting for manual login...")
         start_time = asyncio.get_event_loop().time()
 
+        # 获取当前页面的域名
+        current_url = page.url
+        domain = self._get_domain_from_url(current_url) if current_url else "unknown"
+
         while True:
             html = await page.content()
 
             # 检查是否已登录（登录容器消失）
             if 'class="login-container"' not in html and "login-container" not in html:
                 logger.info("Login detected!")
+                # 登录成功后保存 cookies
+                await self._save_cookies(page, domain)
                 return
 
             # 检查超时
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed > timeout:
                 logger.warning(f"Login timeout after {timeout}s")
+                # 即使超时也保存 cookies（可能已经部分登录）
+                await self._save_cookies(page, domain)
                 return
 
             # 等待一段时间后再次检查
@@ -225,14 +165,37 @@ class XiaohongshuBrowserService(IBrowserService):
         if not search_input:
             raise Exception("Could not find search input with any selector")
 
-        # 清空并输入搜索词
+        # 清空并输入搜索词（使用人类打字模拟）
+        box = await search_input.bounding_box()
+        if box:
+            # 模拟鼠标移动到搜索框
+            await self._simulate_human_mouse_movement(
+                page,
+                random.uniform(100, 200),
+                random.uniform(100, 200),
+                box["x"] + box["width"] / 2,
+                box["y"] + box["height"] / 2,
+            )
+
         await search_input.click()
-        await search_input.fill(keyword.value)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+
+        # 清空输入框
+        await search_input.fill("")
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+
+        # 使用人类打字模拟输入
+        await self._simulate_human_typing(search_input, keyword.value, typing_speed=0.08)
+        await asyncio.sleep(random.uniform(0.3, 0.7))
 
         # 按回车或点击搜索按钮
         await search_input.press("Enter")
         await asyncio.sleep(2)
+
+        # 保存 cookies（搜索后可能更新了 cookies）
+        current_url = page.url
+        domain = self._get_domain_from_url(current_url) if current_url else "www.xiaohongshu.com"
+        await self._save_cookies(page, domain)
 
         logger.info(f"Search completed for: {keyword.value}")
 
@@ -372,9 +335,34 @@ class XiaohongshuBrowserService(IBrowserService):
         link, link_id = random.choice(available_links)
 
         try:
+            page = await self._get_page()
+
+            # 获取链接位置
+            box = await link.bounding_box()
+            if box:
+                # 模拟鼠标移动到链接
+                current_mouse_pos = await page.evaluate(
+                    "() => ({ x: window.mouseX || 0, y: window.mouseY || 0 })"
+                )
+                start_x = current_mouse_pos.get("x", random.uniform(100, 500))
+                start_y = current_mouse_pos.get("y", random.uniform(100, 500))
+                end_x = box["x"] + box["width"] / 2
+                end_y = box["y"] + box["height"] / 2
+
+                await self._simulate_human_mouse_movement(page, start_x, start_y, end_x, end_y)
+                await asyncio.sleep(random.uniform(0.1, 0.3))  # 移动到链接后稍作停顿
+
             await link.click(timeout=5000)
             logger.info(f"Clicked on a new link: {link_id[:50]}")
-            await asyncio.sleep(1)  # 等待页面加载
+            await asyncio.sleep(random.uniform(0.8, 1.5))  # 等待页面加载
+
+            # 保存 cookies（点击链接后可能跳转到新页面，更新了 cookies）
+            current_url = page.url
+            domain = (
+                self._get_domain_from_url(current_url) if current_url else "www.xiaohongshu.com"
+            )
+            await self._save_cookies(page, domain)
+
             return True, link_id
         except Exception as e:
             logger.error(f"Failed to click link: {e}")
@@ -478,10 +466,18 @@ class XiaohongshuBrowserService(IBrowserService):
         page = await self._get_page()
 
         logger.info("Browsing video content")
-        time.sleep(100)
+
         try:
             # 尝试获取视频时长
-            video_duration = await page.evaluate("document.querySelector('.player-container video').duration")
+            video_duration = await page.evaluate("""
+                () => {
+                    const video = document.querySelector('.player-container video');
+                    if (video && video.duration) {
+                        return video.duration;
+                    }
+                    return null;
+                }
+            """)
 
             if video_duration:
                 logger.info(f"Video duration: {video_duration:.2f} seconds")
@@ -589,11 +585,179 @@ class XiaohongshuBrowserService(IBrowserService):
         await page.click("body", position={"x": 50, "y": 50})
         await asyncio.sleep(1)
 
+    async def _wait_for_login_if_needed(self, page: Page, domain: str) -> None:
+        """如果检测到登录框，等待用户登录
+
+        Args:
+            page: 页面对象
+            domain: 域名
+        """
+        while True:
+            try:
+                # 检查是否存在登录容器
+                login_container = await page.query_selector(".login-container")
+                if login_container is None:
+                    # 没有登录容器，说明已登录
+                    logger.debug("No login container found, user is logged in")
+                    break
+
+                # 检测到登录容器，等待登录
+                logger.info("Login container detected, waiting for login...")
+                await asyncio.sleep(2)  # 每2秒检查一次
+
+                # 再次检查登录容器是否消失
+                login_container = await page.query_selector(".login-container")
+                if login_container is None:
+                    logger.info("Login successful!")
+                    # 登录成功后保存 cookies
+                    await self._save_cookies(page, domain)
+                    break
+
+            except Exception as e:
+                logger.error(f"Error checking login status: {e}")
+                # 如果检查出错，继续等待
+                await asyncio.sleep(2)
+
+    async def get_page_title(self, url: str) -> str:
+        """获取小红书内容页面的标题
+
+        Args:
+            url: 内容页面 URL
+
+        Returns:
+            页面标题，如果获取失败则返回空字符串
+        """
+        page = await self._get_page()
+        logger.info(f"Getting page title from: {url}")
+
+        # 加载该域名的 cookies
+        domain = self._get_domain_from_url(url)
+        await self._load_cookies(page, domain)
+
+        try:
+            # 访问页面
+            await page.goto(url, wait_until="load", timeout=60000)
+            await asyncio.sleep(2)
+
+            # 保存 cookies
+            await self._save_cookies(page, domain)
+
+            # 检查是否需要登录
+            await self._wait_for_login_if_needed(page, domain)
+
+            # 页面加载后稍停1-2秒
+            wait_time = random.uniform(1, 2)
+            await asyncio.sleep(wait_time)
+            logger.debug(f"Waited {wait_time:.2f}s after page load")
+
+            # 获取页面标题
+            title = await page.title()
+            logger.info(f"Page title: {title}")
+            return title or ""
+
+        except Exception as e:
+            logger.error(f"Error getting page title: {e}")
+            return ""
+
+    async def get_content_images(self, url: str) -> List[Dict[str, Any]]:
+        """获取小红书内容页面的图片
+
+        Args:
+            url: 内容页面 URL
+
+        Returns:
+            图片列表，每个元素包含 {'url': str, 'index': int}
+            按 data-index 排序，已去重
+        """
+        page = await self._get_page()
+        logger.info(f"Getting content images from: {url}")
+
+        # 加载该域名的 cookies
+        domain = self._get_domain_from_url(url)
+        await self._load_cookies(page, domain)
+
+        try:
+            # 访问页面
+            await page.goto(url, wait_until="load", timeout=60000)
+            await asyncio.sleep(2)
+
+            # 保存 cookies
+            await self._save_cookies(page, domain)
+
+            # 检查是否需要登录
+            await self._wait_for_login_if_needed(page, domain)
+
+            # 页面加载后稍停1-2秒
+            wait_time = random.uniform(1, 2)
+            await asyncio.sleep(wait_time)
+            logger.debug(f"Waited {wait_time:.2f}s after page load")
+
+            # 等待内容加载
+            await page.wait_for_selector(".swiper-slide", timeout=10000)
+
+            # 获取所有图片信息
+            images_data = await page.evaluate("""
+                () => {
+                    const images = [];
+                    const seenIndices = new Set();
+                    
+                    // 查找所有 .swiper-slide img
+                    const slides = document.querySelectorAll('.swiper-slide');
+                    
+                    slides.forEach(slide => {
+                        const img = slide.querySelector('img');
+                        if (!img) return;
+                        
+                        // 获取 data-index
+                        const dataIndex = slide.getAttribute('data-index');
+                        if (dataIndex === null) return;
+                        
+                        const index = parseInt(dataIndex, 10);
+                        
+                        // 去重：如果 index 已存在，跳过
+                        if (seenIndices.has(index)) {
+                            return;
+                        }
+                        seenIndices.add(index);
+                        
+                        // 获取图片 URL（优先使用 src，如果没有则使用 data-src）
+                        const imgUrl = img.src || img.getAttribute('data-src') || img.getAttribute('data-original');
+                        if (!imgUrl) return;
+                        
+                        images.push({
+                            url: imgUrl,
+                            index: index
+                        });
+                    });
+                    
+                    // 按 index 排序
+                    images.sort((a, b) => a.index - b.index);
+                    
+                    return images;
+                }
+            """)
+
+            logger.info(f"Found {len(images_data)} unique images")
+            return images_data
+
+        except Exception as e:
+            logger.error(f"Error getting content images: {e}")
+            return []
+
     async def crawl(self, url: URL, options: Optional[Dict[str, Any]] = None) -> str:
         """爬取指定 URL 的内容（实现接口要求）"""
         page = await self._get_page()
+
+        # 加载该域名的 cookies
+        domain = self._get_domain_from_url(url.value)
+        await self._load_cookies(page, domain)
+
         await page.goto(url.value, wait_until="networkidle")
         await asyncio.sleep(2)
+
+        # 保存 cookies（页面加载后可能更新了 cookies）
+        await self._save_cookies(page, domain)
+
         return await page.content()
 
     async def close(self) -> None:
