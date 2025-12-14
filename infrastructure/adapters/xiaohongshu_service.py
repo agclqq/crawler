@@ -48,7 +48,7 @@ class XiaohongshuBrowserService(BaseBrowserService):
             self._page = await browser.new_page()
 
             # 设置视口
-            await self._page.set_viewport_size({"width": 1920, "height": 1080})
+            #await self._page.set_viewport_size({"width": 1920, "height": 1080})
 
             # 设置反爬虫策略（使用基类方法）
             if self._enable_anti_detection:

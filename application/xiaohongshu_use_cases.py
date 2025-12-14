@@ -56,8 +56,9 @@ class XiaohongshuBrowseUseCase:
 
             # 2. 访问主页并检查登录状态
             home_url = URL(self.XIAOHONGSHU_HOME_URL)
-            is_logged_in = await self._browser_service.check_login_status(home_url)
+            #is_logged_in = await self._browser_service.check_login_status(home_url)
 
+            is_logged_in = True
             # 3. 如果未登录，等待登录
             if not is_logged_in:
                 logger.info("Not logged in, waiting for manual login...")

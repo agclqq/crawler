@@ -117,7 +117,7 @@ class XiaohongshuDownloadImagesUseCase:
             title_prefix = "小红书"
 
         # 组合文件名
-        filename = f"{date_str}{title_prefix}"
+        filename = f"{date_str}/{title_prefix}"
         return filename
 
     async def _download_images_for_url(self, url: str) -> List[Dict[str, Any]]:
@@ -200,7 +200,7 @@ class XiaohongshuDownloadImagesUseCase:
                 # 生成文件名（如果多个 URL，添加序号以避免重名）
                 filename_base = self._generate_filename(page_title)
                 if len(urls) > 1:
-                    filename_base = f"{filename_base}_{url_index}"
+                    filename_base = f"{filename_base}{url_index}"
                 filename = f"{filename_base}.docx"
                 logger.info(f"Generated filename: {filename}")
 
